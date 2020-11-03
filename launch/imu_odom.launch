@@ -1,0 +1,7 @@
+<launch>
+	<node pkg="imu_odom" type="imu_odom_node" name="imu_odom_node" output="screen">
+		<remap from="imu_topic" to="/vectornav/IMU"/>
+		<param name="real_time" value="true"/>
+	</node>
+</launch>
+
