@@ -93,23 +93,43 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 	{
 		if(!lastIcpOdom.header.stamp.isZero())
 		{
-			geometry_msgs::Point currentImuPosition;
-			geometry_msgs::TransformStamped currentRobotToImuTf = tfBuffer->lookupTransform(imuFrame, msg.child_frame_id, msg.header.stamp,
+			geometry_msgs::TransformStamped currentImuToRobotTf = tfBuffer->lookupTransform(msg.child_frame_id, imuFrame, msg.header.stamp,
 																							ros::Duration(0.1));
-			tf2::doTransform(msg.pose.pose.position, currentImuPosition, currentRobotToImuTf);
-			geometry_msgs::Point lastImuPosition;
-			geometry_msgs::TransformStamped lastRobotToImuTf = tfBuffer->lookupTransform(imuFrame, lastIcpOdom.child_frame_id, lastIcpOdom.header.stamp,
+			geometry_msgs::Point currentRobotToImu;
+			currentRobotToImu.x = currentImuToRobotTf.transform.translation.x;
+			currentRobotToImu.y = currentImuToRobotTf.transform.translation.y;
+			currentRobotToImu.z = currentImuToRobotTf.transform .translation.z;
+			geometry_msgs::Point currentMapToImu;
+			geometry_msgs::TransformStamped currentRobotToMapTf;
+			currentRobotToMapTf.transform.translation.x = msg.pose.pose.position.x;
+			currentRobotToMapTf.transform.translation.y = msg.pose.pose.position.y;
+			currentRobotToMapTf.transform.translation.z = msg.pose.pose.position.z;
+			currentRobotToMapTf.transform.rotation = msg.pose.pose.orientation;
+			tf2::doTransform(currentRobotToImu, currentMapToImu, currentRobotToMapTf);
+			
+			geometry_msgs::TransformStamped lastImuToRobotTf = tfBuffer->lookupTransform(lastIcpOdom.child_frame_id, imuFrame, lastIcpOdom.header.stamp,
 																						 ros::Duration(0.1));
-			tf2::doTransform(lastIcpOdom.pose.pose.position, lastImuPosition, lastRobotToImuTf);
+			geometry_msgs::Point lastRobotToImu;
+			lastRobotToImu.x = lastImuToRobotTf.transform.translation.x;
+			lastRobotToImu.y = lastImuToRobotTf.transform.translation.y;
+			lastRobotToImu.z = lastImuToRobotTf.transform.translation.z;
+			geometry_msgs::Point lastMapToImu;
+			geometry_msgs::TransformStamped lastRobotToMapTf;
+			lastRobotToMapTf.transform.translation.x = lastIcpOdom.pose.pose.position.x;
+			lastRobotToMapTf.transform.translation.y = lastIcpOdom.pose.pose.position.y;
+			lastRobotToMapTf.transform.translation.z = lastIcpOdom.pose.pose.position.z;
+			lastRobotToMapTf.transform.rotation = lastIcpOdom.pose.pose.orientation;
+			tf2::doTransform(lastRobotToImu, lastMapToImu, lastRobotToMapTf);
 			
 			double deltaTime = (msg.header.stamp - lastIcpOdom.header.stamp).toSec();
 			geometry_msgs::Vector3 currentVelocityInMapFrame;
-			currentVelocityInMapFrame.x = (currentImuPosition.x - lastImuPosition.x) / deltaTime;
-			currentVelocityInMapFrame.y = (currentImuPosition.y - lastImuPosition.y) / deltaTime;
-			currentVelocityInMapFrame.z = (currentImuPosition.z - lastImuPosition.z) / deltaTime;
+			currentVelocityInMapFrame.x = (currentMapToImu.x - lastMapToImu.x) / deltaTime;
+			currentVelocityInMapFrame.y = (currentMapToImu.y - lastMapToImu.y) / deltaTime;
+			currentVelocityInMapFrame.z = (currentMapToImu.z - lastMapToImu.z) / deltaTime;
 			geometry_msgs::Vector3 currentVelocityInOdomFrame;
-			geometry_msgs::TransformStamped currentMapToOdom = tfBuffer->lookupTransform(odomFrame, msg.header.frame_id, msg.header.stamp, ros::Duration(0.1));
-			tf2::doTransform(currentVelocityInMapFrame, currentVelocityInOdomFrame, currentMapToOdom);
+			geometry_msgs::TransformStamped currentMapToOdomTf = tfBuffer->lookupTransform(odomFrame, msg.header.frame_id, msg.header.stamp,
+																						   ros::Duration(0.1));
+			tf2::doTransform(currentVelocityInMapFrame, currentVelocityInOdomFrame, currentMapToOdomTf);
 			Eigen::Vector3d currentVelocity(currentVelocityInOdomFrame.x, currentVelocityInOdomFrame.y, currentVelocityInOdomFrame.z);
 			
 			velocityMutex.lock();
