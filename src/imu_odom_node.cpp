@@ -6,10 +6,11 @@
 #include <nav_msgs/Odometry.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <list>
 
 std::string odomFrame;
-std::string mapFrame;
+std::string robotFrame;
 double gravity;
 bool gravitySet = false;
 std::mutex velocityMutex;
@@ -51,14 +52,32 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		position += (lastVelocity + (0.5 * deltaVelocity)) * deltaTime;
 		
 		geometry_msgs::TransformStamped imuToOdomTf;
-		imuToOdomTf.header.frame_id = odomFrame;
-		imuToOdomTf.header.stamp = msg.header.stamp;
-		imuToOdomTf.child_frame_id = msg.header.frame_id;
 		imuToOdomTf.transform.translation.x = position[0];
 		imuToOdomTf.transform.translation.y = position[1];
 		imuToOdomTf.transform.translation.z = position[2];
 		imuToOdomTf.transform.rotation = msg.orientation;
-		tfBroadcaster->sendTransform(imuToOdomTf);
+		geometry_msgs::TransformStamped imuToRobotTf = tfBuffer->lookupTransform(robotFrame, msg.header.frame_id, msg.header.stamp, ros::Duration(0.1));
+		geometry_msgs::Pose imuToRobot;
+		imuToRobot.position.x = imuToRobotTf.transform.translation.x;
+		imuToRobot.position.y = imuToRobotTf.transform.translation.y;
+		imuToRobot.position.z = imuToRobotTf.transform.translation.z;
+		imuToRobot.orientation = imuToRobotTf.transform.rotation;
+		geometry_msgs::Pose odomToRobot;
+		tf2::doTransform(imuToRobot, odomToRobot, imuToOdomTf);
+		
+		tf2::Quaternion odomToRobotQuaternion;
+		tf2::fromMsg(odomToRobot.orientation, odomToRobotQuaternion);
+		geometry_msgs::Quaternion robotToOdomQuaternion = tf2::toMsg(odomToRobotQuaternion.inverse());
+		
+		geometry_msgs::TransformStamped robotToOdomTf;
+		robotToOdomTf.header.frame_id = odomFrame;
+		robotToOdomTf.header.stamp = msg.header.stamp;
+		robotToOdomTf.child_frame_id = robotFrame;
+		robotToOdomTf.transform.translation.x = -odomToRobot.position.x;
+		robotToOdomTf.transform.translation.y = -odomToRobot.position.y;
+		robotToOdomTf.transform.translation.z = -odomToRobot.position.z;
+		robotToOdomTf.transform.rotation = robotToOdomQuaternion;
+		tfBroadcaster->sendTransform(robotToOdomTf);
 	}
 	
 	lastImuMeasurement = msg;
@@ -74,7 +93,7 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 		currentVelocityInMapFrame.y = (msg.pose.pose.position.y - lastIcpOdom.pose.pose.position.y) / deltaTime;
 		currentVelocityInMapFrame.z = (msg.pose.pose.position.z - lastIcpOdom.pose.pose.position.z) / deltaTime;
 		geometry_msgs::Vector3 currentVelocityInOdomFrame;
-		geometry_msgs::TransformStamped currentMapToOdom = tfBuffer->lookupTransform(odomFrame, mapFrame, msg.header.stamp, ros::Duration(0.1));
+		geometry_msgs::TransformStamped currentMapToOdom = tfBuffer->lookupTransform(odomFrame, msg.header.frame_id, msg.header.stamp, ros::Duration(0.1));
 		tf2::doTransform(currentVelocityInMapFrame, currentVelocityInOdomFrame, currentMapToOdom);
 		Eigen::Vector3d currentVelocity(currentVelocityInOdomFrame.x, currentVelocityInOdomFrame.y, currentVelocityInOdomFrame.z);
 		
@@ -101,7 +120,7 @@ int main(int argc, char** argv)
 	ros::NodeHandle pnh("~");
 	
 	pnh.param<std::string>("odom_frame", odomFrame, "odom");
-	pnh.param<std::string>("map_frame", mapFrame, "map");
+	pnh.param<std::string>("robot_frame", robotFrame, "base_link");
 	
 	bool realTime;
 	pnh.param<bool>("real_time", realTime, true);
