@@ -29,9 +29,14 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		if(!lastImuMeasurement.header.stamp.isZero())
 		{
 			geometry_msgs::Vector3 lastAccelerationInOdomFrame;
-			geometry_msgs::TransformStamped imuToOdomOrientation;
-			imuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
-			tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, imuToOdomOrientation);
+			geometry_msgs::TransformStamped lastImuToOdomOrientation;
+			lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
+			tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, lastImuToOdomOrientation);
+			
+			geometry_msgs::Vector3 currentAccelerationInOdomFrame;
+			geometry_msgs::TransformStamped currentImuToOdomOrientation;
+			currentImuToOdomOrientation.transform.rotation = msg.orientation;
+			tf2::doTransform(msg.linear_acceleration, currentAccelerationInOdomFrame, currentImuToOdomOrientation);
 			
 			if(!gravitySet)
 			{
@@ -39,10 +44,12 @@ void imuCallback(const sensor_msgs::Imu& msg)
 				gravitySet = true;
 			}
 			lastAccelerationInOdomFrame.z -= gravity;
+			currentAccelerationInOdomFrame.z -= gravity;
 			
 			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
 			Eigen::Vector3d lastAcceleration(lastAccelerationInOdomFrame.x, lastAccelerationInOdomFrame.y, lastAccelerationInOdomFrame.z);
-			Eigen::Vector3d deltaVelocity = lastAcceleration * deltaTime;
+			Eigen::Vector3d currentAcceleration(currentAccelerationInOdomFrame.x, currentAccelerationInOdomFrame.y, currentAccelerationInOdomFrame.z);
+			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime;
 			
 			Eigen::Vector3d lastVelocity;
 			velocityMutex.lock();
