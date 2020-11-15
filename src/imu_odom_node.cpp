@@ -22,8 +22,17 @@ nav_msgs::Odometry lastIcpOdom;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
 
-void imuCallback(const sensor_msgs::Imu& msg)
+void imuCallback(const sensor_msgs::Imu& wrongMsg)
 {
+	sensor_msgs::Imu msg = wrongMsg;
+	msg.header.stamp -= ros::Duration(0.01);
+	msg.linear_acceleration.x -= -0.002;
+	msg.linear_acceleration.x /= 0.999;
+	msg.linear_acceleration.y -= -0.032;
+	msg.linear_acceleration.y /= 1.0;
+	msg.linear_acceleration.z -= -0.536;
+	msg.linear_acceleration.z /= 0.998;
+	
 	try
 	{
 		if(!lastImuMeasurement.header.stamp.isZero())
