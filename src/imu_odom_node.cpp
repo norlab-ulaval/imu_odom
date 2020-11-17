@@ -13,6 +13,7 @@ std::string robotFrame;
 std::string imuFrame;
 double gravity;
 bool gravitySet = false;
+bool translationInhibited = false;
 std::mutex velocityMutex;
 Eigen::Vector3d velocity;
 Eigen::Vector3d position;
@@ -49,7 +50,7 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
 			Eigen::Vector3d lastAcceleration(lastAccelerationInOdomFrame.x, lastAccelerationInOdomFrame.y, lastAccelerationInOdomFrame.z);
 			Eigen::Vector3d currentAcceleration(currentAccelerationInOdomFrame.x, currentAccelerationInOdomFrame.y, currentAccelerationInOdomFrame.z);
-			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime;
+			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime * (translationInhibited ? 0.0 : 1.0);
 			
 			Eigen::Vector3d lastVelocity;
 			velocityMutex.lock();
@@ -173,6 +174,10 @@ int main(int argc, char** argv)
 	
 	bool realTime;
 	pnh.param<bool>("real_time", realTime, true);
+
+	pnh.param<bool>("translation_inhibited", translationInhibited, false);
+
+	
 	
 	int messageQueueSize;
 	if(realTime)
