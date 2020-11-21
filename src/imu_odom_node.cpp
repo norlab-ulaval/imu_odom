@@ -7,6 +7,8 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <list>
+#include <tf2/LinearMath/Quaternion.h>
+#include <imu_odom/Inertia.h>
 
 std::string odomFrame;
 std::string robotFrame;
@@ -21,6 +23,7 @@ sensor_msgs::Imu lastImuMeasurement;
 nav_msgs::Odometry lastIcpOdom;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
+ros::Publisher inertiaPublisher;
 
 void imuCallback(const sensor_msgs::Imu& msg)
 {
@@ -83,6 +86,35 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
 			robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
 			tfBroadcaster->sendTransform(robotToOdomTf);
+			
+			tf2::Quaternion imuToOdomQuaternion;
+			tf2::fromMsg(msg.orientation, imuToOdomQuaternion);
+			geometry_msgs::TransformStamped odomToImuOrientation;
+			odomToImuOrientation.transform.rotation = tf2::toMsg(imuToOdomQuaternion.inverse());
+			
+			Eigen::Vector3d currentVelocity = lastVelocity + deltaVelocity;
+			geometry_msgs::Vector3 linearVelocityInOdomFrame;
+			linearVelocityInOdomFrame.x = currentVelocity[0];
+			linearVelocityInOdomFrame.y = currentVelocity[1];
+			linearVelocityInOdomFrame.z = currentVelocity[2];
+			geometry_msgs::Vector3 linearVelocityInImuFrame;
+			tf2::doTransform(linearVelocityInOdomFrame, linearVelocityInImuFrame, odomToImuOrientation);
+			
+			geometry_msgs::Vector3 linearAccelerationInImuFrame;
+			tf2::doTransform(currentAccelerationInOdomFrame, linearAccelerationInImuFrame, odomToImuOrientation);
+			
+			geometry_msgs::Vector3 angularAccelerationInImuFrame;
+			angularAccelerationInImuFrame.x = (msg.angular_velocity.x - lastImuMeasurement.angular_velocity.x) / deltaTime;
+			angularAccelerationInImuFrame.y = (msg.angular_velocity.y - lastImuMeasurement.angular_velocity.y) / deltaTime;
+			angularAccelerationInImuFrame.z = (msg.angular_velocity.z - lastImuMeasurement.angular_velocity.z) / deltaTime;
+			
+			imu_odom::Inertia inertiaMsg;
+			inertiaMsg.header = msg.header;
+			inertiaMsg.linear_velocity = linearVelocityInImuFrame;
+			inertiaMsg.linear_acceleration = linearAccelerationInImuFrame;
+			inertiaMsg.angular_velocity = msg.angular_velocity;
+			inertiaMsg.angular_acceleration = angularAccelerationInImuFrame;
+			inertiaPublisher.publish(inertiaMsg);
 		}
 		
 		lastImuMeasurement = msg;
@@ -190,6 +222,8 @@ int main(int argc, char** argv)
 	
 	ros::Subscriber imuSubscriber = nh.subscribe("imu_topic", messageQueueSize, imuCallback);
 	ros::Subscriber icpOdomSubscriber = nh.subscribe("icp_odom", messageQueueSize, icpOdomCallback);
+	
+	inertiaPublisher = nh.advertise<imu_odom::Inertia>("inertia_topic", messageQueueSize);
 	
 	ros::spin();
 	
