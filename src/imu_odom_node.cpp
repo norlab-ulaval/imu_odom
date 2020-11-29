@@ -24,12 +24,26 @@ nav_msgs::Odometry lastIcpOdom;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
 ros::Publisher inertiaPublisher;
+bool mapperStarted = false;
 
 void imuCallback(const sensor_msgs::Imu& msg)
 {
 	try
 	{
-		if(!lastImuMeasurement.header.stamp.isZero())
+		if(lastImuMeasurement.header.stamp.isZero())
+		{
+			geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
+			geometry_msgs::Point robotPositionInImuFrame;
+			robotPositionInImuFrame.x = robotToImuTf.transform.translation.x;
+			robotPositionInImuFrame.y = robotToImuTf.transform.translation.y;
+			robotPositionInImuFrame.z = robotToImuTf.transform.translation.z;
+			geometry_msgs::Point robotPositionInOdomFrame;
+			geometry_msgs::TransformStamped imuToOdomOrientation;
+			imuToOdomOrientation.transform.rotation = msg.orientation;
+			tf2::doTransform(robotPositionInImuFrame, robotPositionInOdomFrame, imuToOdomOrientation);
+			position = Eigen::Vector3d(-robotPositionInOdomFrame.x, -robotPositionInOdomFrame.y, -robotPositionInOdomFrame.z);
+		}
+		else
 		{
 			geometry_msgs::Vector3 lastAccelerationInOdomFrame;
 			geometry_msgs::TransformStamped lastImuToOdomOrientation;
@@ -57,6 +71,10 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			Eigen::Vector3d lastVelocity;
 			velocityMutex.lock();
 			deltaVelocities.emplace_back(std::make_pair(msg.header.stamp, deltaVelocity));
+			if(!mapperStarted)
+			{
+				deltaVelocity = Eigen::Vector3d::Zero();
+			}
 			lastVelocity = velocity;
 			velocity += deltaVelocity;
 			velocityMutex.unlock();
@@ -172,6 +190,7 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 			Eigen::Vector3d currentVelocity(currentVelocityInOdomFrame.x, currentVelocityInOdomFrame.y, currentVelocityInOdomFrame.z);
 			
 			velocityMutex.lock();
+			mapperStarted = true;
 			while(!deltaVelocities.empty() && deltaVelocities.front().first <= msg.header.stamp)
 			{
 				deltaVelocities.pop_front();
