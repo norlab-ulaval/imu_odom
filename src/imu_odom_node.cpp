@@ -2,6 +2,7 @@
 #include <sensor_msgs/Imu.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <mutex>
 #include <nav_msgs/Odometry.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -13,6 +14,7 @@
 std::string odomFrame;
 std::string robotFrame;
 std::string imuFrame;
+std::string lidarFrame;
 bool rotationOnly;
 double gravity;
 bool gravitySet = false;
@@ -46,9 +48,41 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		}
 		else
 		{
-			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
+			geometry_msgs::Vector3 lastAngularVelocityInOdomFrame;
+			geometry_msgs::TransformStamped lastImuToOdomOrientation;
+			lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
+			tf2::doTransform(lastImuMeasurement.angular_velocity, lastAngularVelocityInOdomFrame, lastImuToOdomOrientation);
 			
-			geometry_msgs::Vector3 linearVelocityInImuFrame, linearAccelerationInImuFrame;
+			geometry_msgs::Vector3 currentAngularVelocityInOdomFrame;
+			geometry_msgs::TransformStamped currentImuToOdomOrientation;
+			currentImuToOdomOrientation.transform.rotation = msg.orientation;
+			tf2::doTransform(msg.angular_velocity, currentAngularVelocityInOdomFrame, currentImuToOdomOrientation);
+			
+			Eigen::Vector3d lastAngularVelocity(lastAngularVelocityInOdomFrame.x, lastAngularVelocityInOdomFrame.y, lastAngularVelocityInOdomFrame.z);
+			Eigen::Vector3d currentAngularVelocity(currentAngularVelocityInOdomFrame.x, currentAngularVelocityInOdomFrame.y, currentAngularVelocityInOdomFrame.z);
+			
+			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
+			Eigen::Vector3d angularAcceleration = (currentAngularVelocity - lastAngularVelocity) / deltaTime;
+			geometry_msgs::Vector3 angularAccelerationInOdomFrame;
+			angularAccelerationInOdomFrame.x = angularAcceleration[0];
+			angularAccelerationInOdomFrame.y = angularAcceleration[1];
+			angularAccelerationInOdomFrame.z = angularAcceleration[2];
+			
+			geometry_msgs::Vector3 angularVelocityInLidarFrame;
+			tf2::Quaternion imuOrientationInOdomFrame;
+			tf2::fromMsg(msg.orientation, imuOrientationInOdomFrame);
+			geometry_msgs::Quaternion odomOrientationInImuFrame = tf2::toMsg(imuOrientationInOdomFrame.inverse());
+			geometry_msgs::Quaternion odomOrientationInLidarFrame;
+			geometry_msgs::TransformStamped imuToLidarTf = tfBuffer->lookupTransform(lidarFrame, imuFrame, msg.header.stamp, ros::Duration(0.1));
+			tf2::doTransform(odomOrientationInImuFrame, odomOrientationInLidarFrame, imuToLidarTf);
+			geometry_msgs::TransformStamped odomToLidarOrientationTf;
+			odomToLidarOrientationTf.transform.rotation = odomOrientationInLidarFrame;
+			tf2::doTransform(currentAngularVelocityInOdomFrame, angularVelocityInLidarFrame, odomToLidarOrientationTf);
+			
+			geometry_msgs::Vector3 angularAccelerationInLidarFrame;
+			tf2::doTransform(angularAccelerationInOdomFrame, angularAccelerationInLidarFrame, odomToLidarOrientationTf);
+			
+			geometry_msgs::Vector3 lidarLinearVelocityInLidarFrame, lidarLinearAccelerationInLidarFrame;
 			if(rotationOnly)
 			{
 				geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
@@ -67,13 +101,9 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			else
 			{
 				geometry_msgs::Vector3 lastAccelerationInOdomFrame;
-				geometry_msgs::TransformStamped lastImuToOdomOrientation;
-				lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
 				tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, lastImuToOdomOrientation);
 				
 				geometry_msgs::Vector3 currentAccelerationInOdomFrame;
-				geometry_msgs::TransformStamped currentImuToOdomOrientation;
-				currentImuToOdomOrientation.transform.rotation = msg.orientation;
 				tf2::doTransform(msg.linear_acceleration, currentAccelerationInOdomFrame, currentImuToOdomOrientation);
 				
 				if(!gravitySet)
@@ -125,32 +155,39 @@ void imuCallback(const sensor_msgs::Imu& msg)
 				robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
 				tfBroadcaster->sendTransform(robotToOdomTf);
 				
-				tf2::Quaternion imuToOdomQuaternion;
-				tf2::fromMsg(msg.orientation, imuToOdomQuaternion);
-				geometry_msgs::TransformStamped odomToImuOrientation;
-				odomToImuOrientation.transform.rotation = tf2::toMsg(imuToOdomQuaternion.inverse());
+				geometry_msgs::TransformStamped lidarToImuTf = tfBuffer->lookupTransform(imuFrame, lidarFrame, msg.header.stamp, ros::Duration(0.1));
+				geometry_msgs::Point lidarPositionInImuFrame;
+				lidarPositionInImuFrame.x = lidarToImuTf.transform.translation.x;
+				lidarPositionInImuFrame.y = lidarToImuTf.transform.translation.y;
+				lidarPositionInImuFrame.z = lidarToImuTf.transform.translation.z;
+				geometry_msgs::Point lidarPositionInOdomFrame;
+				tf2::doTransform(lidarPositionInImuFrame, lidarPositionInOdomFrame, imuToOdomTf);
+				Eigen::Vector3d lidarPosition(lidarPositionInOdomFrame.x, lidarPositionInOdomFrame.y, lidarPositionInOdomFrame.z);
 				
-				Eigen::Vector3d currentVelocity = lastVelocity + deltaVelocity;
-				geometry_msgs::Vector3 linearVelocityInOdomFrame;
-				linearVelocityInOdomFrame.x = currentVelocity[0];
-				linearVelocityInOdomFrame.y = currentVelocity[1];
-				linearVelocityInOdomFrame.z = currentVelocity[2];
-				tf2::doTransform(linearVelocityInOdomFrame, linearVelocityInImuFrame, odomToImuOrientation);
+				Eigen::Vector3d linearVelocity = lastVelocity + deltaVelocity;
+				Eigen::Vector3d lidarLinearVelocity = linearVelocity + currentAngularVelocity.cross(lidarPosition - position);
+				geometry_msgs::Vector3 lidarLinearVelocityInOdomFrame;
+				lidarLinearVelocityInOdomFrame.x = lidarLinearVelocity[0];
+				lidarLinearVelocityInOdomFrame.y = lidarLinearVelocity[1];
+				lidarLinearVelocityInOdomFrame.z = lidarLinearVelocity[2];
+				tf2::doTransform(lidarLinearVelocityInOdomFrame, lidarLinearVelocityInLidarFrame, odomToLidarOrientationTf);
 				
-				tf2::doTransform(currentAccelerationInOdomFrame, linearAccelerationInImuFrame, odomToImuOrientation);
+				Eigen::Vector3d lidarLinearAcceleration = currentAcceleration +
+						currentAngularVelocity.cross(currentAngularVelocity.cross(lidarPosition - position)) +
+														  angularAcceleration.cross(lidarPosition - position);
+				geometry_msgs::Vector3 lidarLinearAccelerationInOdomFrame;
+				lidarLinearAccelerationInOdomFrame.x = lidarLinearAcceleration[0];
+				lidarLinearAccelerationInOdomFrame.y = lidarLinearAcceleration[1];
+				lidarLinearAccelerationInOdomFrame.z = lidarLinearAcceleration[2];
+				tf2::doTransform(lidarLinearAccelerationInOdomFrame, lidarLinearAccelerationInLidarFrame, odomToLidarOrientationTf);
 			}
-			
-			geometry_msgs::Vector3 angularAccelerationInImuFrame;
-			angularAccelerationInImuFrame.x = (msg.angular_velocity.x - lastImuMeasurement.angular_velocity.x) / deltaTime;
-			angularAccelerationInImuFrame.y = (msg.angular_velocity.y - lastImuMeasurement.angular_velocity.y) / deltaTime;
-			angularAccelerationInImuFrame.z = (msg.angular_velocity.z - lastImuMeasurement.angular_velocity.z) / deltaTime;
 			
 			imu_odom::Inertia inertiaMsg;
 			inertiaMsg.header = msg.header;
-			inertiaMsg.linear_velocity = linearVelocityInImuFrame;
-			inertiaMsg.linear_acceleration = linearAccelerationInImuFrame;
-			inertiaMsg.angular_velocity = msg.angular_velocity;
-			inertiaMsg.angular_acceleration = angularAccelerationInImuFrame;
+			inertiaMsg.linear_velocity = lidarLinearVelocityInLidarFrame;
+			inertiaMsg.linear_acceleration = lidarLinearAccelerationInLidarFrame;
+			inertiaMsg.angular_velocity = angularVelocityInLidarFrame;
+			inertiaMsg.angular_acceleration = angularAccelerationInLidarFrame;
 			inertiaPublisher.publish(inertiaMsg);
 		}
 		
@@ -240,6 +277,7 @@ int main(int argc, char** argv)
 	pnh.param<std::string>("odom_frame", odomFrame, "odom");
 	pnh.param<std::string>("robot_frame", robotFrame, "base_link");
 	pnh.param<std::string>("imu_frame", imuFrame, "imu_link");
+	pnh.param<std::string>("lidar_frame", lidarFrame, "rslidar16");
 	pnh.param<bool>("rotation_only", rotationOnly, false);
 	
 	bool realTime;
