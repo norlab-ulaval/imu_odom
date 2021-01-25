@@ -1,92 +1,104 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <Eigen/Core>
 #include <mutex>
-#include <nav_msgs/Odometry.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <marvelmind_nav/hedge_pos.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <list>
 
 std::string odomFrame;
 std::string robotFrame;
-std::string imuFrame;
-double gravity;
-bool gravitySet = false;
-bool translationInhibited = false;
-std::mutex velocityMutex;
-Eigen::Vector3d velocity;
-Eigen::Vector3d position;
+std::string mobileHedgeFrame;
+bool rotationOnly;
 std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
-sensor_msgs::Imu lastImuMeasurement;
-nav_msgs::Odometry lastIcpOdom;
-std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
+std::mutex mutex;
+geometry_msgs::Quaternion odomToStaticHedgeQuaternion;
+geometry_msgs::Quaternion staticHedgeToOdomQuaternion;
+std::list<sensor_msgs::Imu> imuMeasurements;
 
 void imuCallback(const sensor_msgs::Imu& msg)
 {
+	mutex.lock();
+	imuMeasurements.emplace_back(msg);
+	mutex.unlock();
+}
+
+void hedgeCallback(const marvelmind_nav::hedge_pos& msg)
+{
 	try
 	{
-		if(!lastImuMeasurement.header.stamp.isZero())
+		mutex.lock();
+		while(imuMeasurements.size() >= 2 && (++imuMeasurements.begin())->header.stamp <= msg.stamp)
 		{
-			geometry_msgs::Vector3 lastAccelerationInOdomFrame;
-			geometry_msgs::TransformStamped lastImuToOdomOrientation;
-			lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
-			tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, lastImuToOdomOrientation);
+			imuMeasurements.pop_front();
+		}
+		sensor_msgs::Imu imuMsg;
+		if(!imuMeasurements.empty())
+		{
+			imuMsg = imuMeasurements.front();
+		}
+		mutex.unlock();
+
+		if(!imuMsg.header.stamp.isZero())
+		{
+			// compute mobileHedge orientation in odom frame
+			geometry_msgs::TransformStamped mobileHedgeToImuTf = tfBuffer->lookupTransform(imuMsg.header.frame_id, mobileHedgeFrame, msg.stamp, ros::Duration(0.1));
+                        geometry_msgs::Quaternion mobileHedgeOrientationInImuFrame = mobileHedgeToImuTf.transform.rotation;
+			geometry_msgs::Quaternion mobileHedgeOrientationInOdomFrame;
+			geometry_msgs::TransformStamped imuToOdomOrientationTf;
+			imuToOdomOrientationTf.transform.rotation = imuMsg.orientation;
+			tf2::doTransform(mobileHedgeOrientationInImuFrame, mobileHedgeOrientationInOdomFrame, imuToOdomOrientationTf);
 			
-			geometry_msgs::Vector3 currentAccelerationInOdomFrame;
-			geometry_msgs::TransformStamped currentImuToOdomOrientation;
-			currentImuToOdomOrientation.transform.rotation = msg.orientation;
-			tf2::doTransform(msg.linear_acceleration, currentAccelerationInOdomFrame, currentImuToOdomOrientation);
+			// compute mobileHedge orientation in static hedge frame
+			geometry_msgs::Quaternion mobileHedgeOrientationInStaticHedgeFrame;
+			geometry_msgs::TransformStamped odomToStaticHedgeOrientationTf;
+                        odomToStaticHedgeOrientationTf.transform.rotation = odomToStaticHedgeQuaternion;
+			tf2::doTransform(mobileHedgeOrientationInOdomFrame, mobileHedgeOrientationInStaticHedgeFrame, odomToStaticHedgeOrientationTf);
+
+			// compute mobileHedge pose in odom frame
+			geometry_msgs::Pose mobileHedgeInStaticHedgeFrame;
+			mobileHedgeInStaticHedgeFrame.position.x = msg.x_m;
+			mobileHedgeInStaticHedgeFrame.position.y = msg.y_m;
+			mobileHedgeInStaticHedgeFrame.position.z = msg.z_m;
+			mobileHedgeInStaticHedgeFrame.orientation = mobileHedgeOrientationInStaticHedgeFrame;
+			geometry_msgs::Pose mobileHedgeInOdomFrame;
+			geometry_msgs::TransformStamped staticHedgeToOdomTf;
+			staticHedgeToOdomTf.transform.rotation = staticHedgeToOdomQuaternion;
+			tf2::doTransform(mobileHedgeInStaticHedgeFrame, mobileHedgeInOdomFrame, staticHedgeToOdomTf);
 			
-			if(!gravitySet)
-			{
-				gravity = lastAccelerationInOdomFrame.z;
-				gravitySet = true;
-			}
-			lastAccelerationInOdomFrame.z -= gravity;
-			currentAccelerationInOdomFrame.z -= gravity;
-			
-			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
-			Eigen::Vector3d lastAcceleration(lastAccelerationInOdomFrame.x, lastAccelerationInOdomFrame.y, lastAccelerationInOdomFrame.z);
-			Eigen::Vector3d currentAcceleration(currentAccelerationInOdomFrame.x, currentAccelerationInOdomFrame.y, currentAccelerationInOdomFrame.z);
-			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime * (translationInhibited ? 0.0 : 1.0);
-			
-			Eigen::Vector3d lastVelocity;
-			velocityMutex.lock();
-			deltaVelocities.emplace_back(std::make_pair(msg.header.stamp, deltaVelocity));
-			lastVelocity = velocity;
-			velocity += deltaVelocity;
-			velocityMutex.unlock();
-			
-			position += (lastVelocity + (0.5 * deltaVelocity)) * deltaTime;
-			
-			geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
-			geometry_msgs::Pose robotPoseInImuFrame;
-			robotPoseInImuFrame.position.x = robotToImuTf.transform.translation.x;
-			robotPoseInImuFrame.position.y = robotToImuTf.transform.translation.y;
-			robotPoseInImuFrame.position.z = robotToImuTf.transform.translation.z;
-			robotPoseInImuFrame.orientation = robotToImuTf.transform.rotation;
+			// compute robot pose in odom frame
+			geometry_msgs::TransformStamped robotToMobileHedgeTf = tfBuffer->lookupTransform(mobileHedgeFrame, robotFrame, msg.stamp, ros::Duration(0.1));
+			geometry_msgs::Pose robotPoseInMobileHedgeFrame;
+			robotPoseInMobileHedgeFrame.position.x = robotToMobileHedgeTf.transform.translation.x;
+			robotPoseInMobileHedgeFrame.position.y = robotToMobileHedgeTf.transform.translation.y;
+			robotPoseInMobileHedgeFrame.position.z = robotToMobileHedgeTf.transform.translation.z;
+			robotPoseInMobileHedgeFrame.orientation = robotToMobileHedgeTf.transform.rotation;
 			geometry_msgs::Pose robotPoseInOdomFrame;
-			geometry_msgs::TransformStamped imuToOdomTf;
-			imuToOdomTf.transform.translation.x = position[0];
-			imuToOdomTf.transform.translation.y = position[1];
-			imuToOdomTf.transform.translation.z = position[2];
-			imuToOdomTf.transform.rotation = msg.orientation;
-			tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
-			
+			geometry_msgs::TransformStamped mobileHedgeToOdomTf;
+			mobileHedgeToOdomTf.transform.translation.x = mobileHedgeInOdomFrame.position.x;
+			mobileHedgeToOdomTf.transform.translation.y = mobileHedgeInOdomFrame.position.y;
+			mobileHedgeToOdomTf.transform.translation.z = mobileHedgeInOdomFrame.position.z;
+			mobileHedgeToOdomTf.transform.rotation = mobileHedgeInOdomFrame.orientation;
+			tf2::doTransform(robotPoseInMobileHedgeFrame, robotPoseInOdomFrame, mobileHedgeToOdomTf);
+
+			// publish tf
 			geometry_msgs::TransformStamped robotToOdomTf;
 			robotToOdomTf.header.frame_id = odomFrame;
-			robotToOdomTf.header.stamp = msg.header.stamp;
 			robotToOdomTf.child_frame_id = robotFrame;
-			robotToOdomTf.transform.translation.x = robotPoseInOdomFrame.position.x;
-			robotToOdomTf.transform.translation.y = robotPoseInOdomFrame.position.y;
-			robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
+			robotToOdomTf.header.stamp = msg.stamp;
+			if(!rotationOnly)
+			{
+				robotToOdomTf.transform.translation.x = robotPoseInOdomFrame.position.x;
+				robotToOdomTf.transform.translation.y = robotPoseInOdomFrame.position.y;
+				robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
+			}
 			robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
 			tfBroadcaster->sendTransform(robotToOdomTf);
 		}
-		
-		lastImuMeasurement = msg;
 	}
 	catch(const tf2::TransformException& ex)
 	{
@@ -95,71 +107,22 @@ void imuCallback(const sensor_msgs::Imu& msg)
 	}
 }
 
-void icpOdomCallback(const nav_msgs::Odometry& msg)
+tf2::Matrix3x3 castToRotationMatrix(std::string matrixStr)
 {
-	try
+	matrixStr.erase(std::remove(matrixStr.begin(), matrixStr.end(), '['), matrixStr.end());
+	matrixStr.erase(std::remove(matrixStr.begin(), matrixStr.end(), ']'), matrixStr.end());
+	
+	double elements[9];
+	int counter = 0;	
+	size_t previousPos = 0;
+	size_t pos = 0;
+	while(pos != std::string::npos)
 	{
-		if(!lastIcpOdom.header.stamp.isZero())
-		{
-			geometry_msgs::TransformStamped currentImuToRobotTf = tfBuffer->lookupTransform(msg.child_frame_id, imuFrame, msg.header.stamp,
-																							ros::Duration(0.1));
-			geometry_msgs::Point currentPositionInRobotFrame;
-			currentPositionInRobotFrame.x = currentImuToRobotTf.transform.translation.x;
-			currentPositionInRobotFrame.y = currentImuToRobotTf.transform.translation.y;
-			currentPositionInRobotFrame.z = currentImuToRobotTf.transform.translation.z;
-			geometry_msgs::Point currentPositionInMapFrame;
-			geometry_msgs::TransformStamped currentRobotToMapTf;
-			currentRobotToMapTf.transform.translation.x = msg.pose.pose.position.x;
-			currentRobotToMapTf.transform.translation.y = msg.pose.pose.position.y;
-			currentRobotToMapTf.transform.translation.z = msg.pose.pose.position.z;
-			currentRobotToMapTf.transform.rotation = msg.pose.pose.orientation;
-			tf2::doTransform(currentPositionInRobotFrame, currentPositionInMapFrame, currentRobotToMapTf);
-			
-			geometry_msgs::TransformStamped lastImuToRobotTf = tfBuffer->lookupTransform(lastIcpOdom.child_frame_id, imuFrame, lastIcpOdom.header.stamp,
-																						 ros::Duration(0.1));
-			geometry_msgs::Point lastPositionInRobotFrame;
-			lastPositionInRobotFrame.x = lastImuToRobotTf.transform.translation.x;
-			lastPositionInRobotFrame.y = lastImuToRobotTf.transform.translation.y;
-			lastPositionInRobotFrame.z = lastImuToRobotTf.transform.translation.z;
-			geometry_msgs::Point lastPositionInMapFrame;
-			geometry_msgs::TransformStamped lastRobotToMapTf;
-			lastRobotToMapTf.transform.translation.x = lastIcpOdom.pose.pose.position.x;
-			lastRobotToMapTf.transform.translation.y = lastIcpOdom.pose.pose.position.y;
-			lastRobotToMapTf.transform.translation.z = lastIcpOdom.pose.pose.position.z;
-			lastRobotToMapTf.transform.rotation = lastIcpOdom.pose.pose.orientation;
-			tf2::doTransform(lastPositionInRobotFrame, lastPositionInMapFrame, lastRobotToMapTf);
-			
-			double deltaTime = (msg.header.stamp - lastIcpOdom.header.stamp).toSec();
-			geometry_msgs::Vector3 currentVelocityInMapFrame;
-			currentVelocityInMapFrame.x = (currentPositionInMapFrame.x - lastPositionInMapFrame.x) / deltaTime;
-			currentVelocityInMapFrame.y = (currentPositionInMapFrame.y - lastPositionInMapFrame.y) / deltaTime;
-			currentVelocityInMapFrame.z = (currentPositionInMapFrame.z - lastPositionInMapFrame.z) / deltaTime;
-			geometry_msgs::Vector3 currentVelocityInOdomFrame;
-			geometry_msgs::TransformStamped currentMapToOdomTf = tfBuffer->lookupTransform(odomFrame, msg.header.frame_id, msg.header.stamp,
-																						   ros::Duration(0.1));
-			tf2::doTransform(currentVelocityInMapFrame, currentVelocityInOdomFrame, currentMapToOdomTf);
-			Eigen::Vector3d currentVelocity(currentVelocityInOdomFrame.x, currentVelocityInOdomFrame.y, currentVelocityInOdomFrame.z);
-			
-			velocityMutex.lock();
-			while(!deltaVelocities.empty() && deltaVelocities.front().first <= msg.header.stamp)
-			{
-				deltaVelocities.pop_front();
-			}
-			for(auto it = deltaVelocities.begin(); it != deltaVelocities.end(); it++)
-			{
-				currentVelocity += it->second;
-			}
-			velocity = currentVelocity;
-			velocityMutex.unlock();
-		}
-		
-		lastIcpOdom = msg;
+		pos = matrixStr.find(",", previousPos);
+		elements[counter++] = std::stod(matrixStr.substr(previousPos, pos-previousPos));
+		previousPos = pos+1;
 	}
-	catch(const tf2::TransformException& ex)
-	{
-		ROS_WARN("%s", ex.what());
-		return;
-	}
+	return tf2::Matrix3x3(elements[0], elements[1], elements[2], elements[3], elements[4], elements[5], elements[6], elements[7], elements[8]);
 }
 
 int main(int argc, char** argv)
@@ -170,15 +133,21 @@ int main(int argc, char** argv)
 	
 	pnh.param<std::string>("odom_frame", odomFrame, "odom");
 	pnh.param<std::string>("robot_frame", robotFrame, "base_link");
-	pnh.param<std::string>("imu_frame", imuFrame, "imu_link");
+	pnh.param<std::string>("mobile_hedge_frame", mobileHedgeFrame, "hedge");
+
+	pnh.param<bool>("rotation_only", rotationOnly, false);
+	
+	std::string matrixStr;
+	pnh.param<std::string>("odom_to_static_hedge_rotation_matrix", matrixStr, "[[1,0,0],[0,1,0],[0,0,1]]");
+	
+	tf2::Quaternion quaternion;
+	castToRotationMatrix(matrixStr).getRotation(quaternion);
+	odomToStaticHedgeQuaternion = tf2::toMsg(quaternion);
+	staticHedgeToOdomQuaternion = tf2::toMsg(quaternion.inverse());
 	
 	bool realTime;
 	pnh.param<bool>("real_time", realTime, true);
 
-	pnh.param<bool>("translation_inhibited", translationInhibited, false);
-
-	
-	
 	int messageQueueSize;
 	if(realTime)
 	{
@@ -194,7 +163,7 @@ int main(int argc, char** argv)
 	tfBroadcaster = std::unique_ptr<tf2_ros::TransformBroadcaster>(new tf2_ros::TransformBroadcaster);
 	
 	ros::Subscriber imuSubscriber = nh.subscribe("imu_topic", messageQueueSize, imuCallback);
-	ros::Subscriber icpOdomSubscriber = nh.subscribe("icp_odom", messageQueueSize, icpOdomCallback);
+	ros::Subscriber hedgeSubscriber = nh.subscribe("hedge_topic", messageQueueSize, hedgeCallback);
 	
 	ros::spin();
 	

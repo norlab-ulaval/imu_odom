@@ -12,12 +12,8 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   tf2_geometry_msgs
   tf2_ros
-  nav_msgs
+  marvelmind_nav
 )
-
-## System dependencies are found with CMake's conventions
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -150,7 +146,6 @@ add_executable(${PROJECT_NAME}_node src/imu_odom_node.cpp)
 ## Specify libraries to link a library or executable target against
 target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}
-  Eigen3::Eigen
 )
 
 #############
