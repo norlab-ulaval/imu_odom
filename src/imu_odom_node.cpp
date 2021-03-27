@@ -86,13 +86,12 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			tfBroadcaster->sendTransform(robotToOdomTf);
 		}
 		
-		lastImuMeasurement = msg;
 	}
 	catch(const tf2::TransformException& ex)
 	{
 		ROS_WARN("%s", ex.what());
-		return;
 	}
+	lastImuMeasurement = msg;
 }
 
 void icpOdomCallback(const nav_msgs::Odometry& msg)
@@ -153,13 +152,12 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 			velocityMutex.unlock();
 		}
 		
-		lastIcpOdom = msg;
 	}
 	catch(const tf2::TransformException& ex)
 	{
 		ROS_WARN("%s", ex.what());
-		return;
 	}
+	lastIcpOdom = msg;
 }
 
 int main(int argc, char** argv)
