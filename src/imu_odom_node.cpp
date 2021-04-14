@@ -8,18 +8,21 @@
 #include <tf2_ros/transform_listener.h>
 #include <list>
 
+const ros::Duration MAX_TIME_WITHOUT_ICP_ODOM(2.0);
+
 std::string odomFrame;
 std::string robotFrame;
 std::string imuFrame;
+bool rotationOnly;
 double gravity;
 bool gravitySet = false;
-bool translationInhibited = false;
-std::mutex velocityMutex;
 Eigen::Vector3d velocity;
+std::mutex velocityMutex;
 Eigen::Vector3d position;
 std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
 sensor_msgs::Imu lastImuMeasurement;
 nav_msgs::Odometry lastIcpOdom;
+std::mutex lastIcpOdomMutex;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
 
@@ -27,18 +30,35 @@ void imuCallback(const sensor_msgs::Imu& msg)
 {
 	try
 	{
-		if(!lastImuMeasurement.header.stamp.isZero())
+		lastIcpOdomMutex.lock();
+		bool underMaxTimeWithoutIcpOdom = (msg.header.stamp - lastIcpOdom.header.stamp) <= MAX_TIME_WITHOUT_ICP_ODOM;
+		lastIcpOdomMutex.unlock();
+
+		if(lastImuMeasurement.header.stamp.isZero())
+		{
+			geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
+			geometry_msgs::Point robotPositionInImuFrame;
+			robotPositionInImuFrame.x = robotToImuTf.transform.translation.x;
+			robotPositionInImuFrame.y = robotToImuTf.transform.translation.y;
+			robotPositionInImuFrame.z = robotToImuTf.transform.translation.z;
+			geometry_msgs::Point robotPositionInOdomFrame;
+			geometry_msgs::TransformStamped imuToOdomOrientation;
+			imuToOdomOrientation.transform.rotation = msg.orientation;
+			tf2::doTransform(robotPositionInImuFrame, robotPositionInOdomFrame, imuToOdomOrientation);
+			position = Eigen::Vector3d(-robotPositionInOdomFrame.x, -robotPositionInOdomFrame.y, -robotPositionInOdomFrame.z);
+		}
+		else if(underMaxTimeWithoutIcpOdom && !rotationOnly)
 		{
 			geometry_msgs::Vector3 lastAccelerationInOdomFrame;
 			geometry_msgs::TransformStamped lastImuToOdomOrientation;
 			lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
 			tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, lastImuToOdomOrientation);
-			
+		
 			geometry_msgs::Vector3 currentAccelerationInOdomFrame;
 			geometry_msgs::TransformStamped currentImuToOdomOrientation;
 			currentImuToOdomOrientation.transform.rotation = msg.orientation;
 			tf2::doTransform(msg.linear_acceleration, currentAccelerationInOdomFrame, currentImuToOdomOrientation);
-			
+		
 			if(!gravitySet)
 			{
 				gravity = lastAccelerationInOdomFrame.z;
@@ -46,12 +66,12 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			}
 			lastAccelerationInOdomFrame.z -= gravity;
 			currentAccelerationInOdomFrame.z -= gravity;
-			
+		
 			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
 			Eigen::Vector3d lastAcceleration(lastAccelerationInOdomFrame.x, lastAccelerationInOdomFrame.y, lastAccelerationInOdomFrame.z);
 			Eigen::Vector3d currentAcceleration(currentAccelerationInOdomFrame.x, currentAccelerationInOdomFrame.y, currentAccelerationInOdomFrame.z);
-			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime * (translationInhibited ? 0.0 : 1.0);
-			
+			Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime;
+		
 			Eigen::Vector3d lastVelocity;
 			velocityMutex.lock();
 			deltaVelocities.emplace_back(std::make_pair(msg.header.stamp, deltaVelocity));
@@ -60,32 +80,31 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			velocityMutex.unlock();
 			
 			position += (lastVelocity + (0.5 * deltaVelocity)) * deltaTime;
-			
-			geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
-			geometry_msgs::Pose robotPoseInImuFrame;
-			robotPoseInImuFrame.position.x = robotToImuTf.transform.translation.x;
-			robotPoseInImuFrame.position.y = robotToImuTf.transform.translation.y;
-			robotPoseInImuFrame.position.z = robotToImuTf.transform.translation.z;
-			robotPoseInImuFrame.orientation = robotToImuTf.transform.rotation;
-			geometry_msgs::Pose robotPoseInOdomFrame;
-			geometry_msgs::TransformStamped imuToOdomTf;
-			imuToOdomTf.transform.translation.x = position[0];
-			imuToOdomTf.transform.translation.y = position[1];
-			imuToOdomTf.transform.translation.z = position[2];
-			imuToOdomTf.transform.rotation = msg.orientation;
-			tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
-			
-			geometry_msgs::TransformStamped robotToOdomTf;
-			robotToOdomTf.header.frame_id = odomFrame;
-			robotToOdomTf.header.stamp = msg.header.stamp;
-			robotToOdomTf.child_frame_id = robotFrame;
-			robotToOdomTf.transform.translation.x = robotPoseInOdomFrame.position.x;
-			robotToOdomTf.transform.translation.y = robotPoseInOdomFrame.position.y;
-			robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
-			robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
-			tfBroadcaster->sendTransform(robotToOdomTf);
 		}
-		
+
+		geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
+		geometry_msgs::Pose robotPoseInImuFrame;
+		robotPoseInImuFrame.position.x = robotToImuTf.transform.translation.x;
+		robotPoseInImuFrame.position.y = robotToImuTf.transform.translation.y;
+		robotPoseInImuFrame.position.z = robotToImuTf.transform.translation.z;
+		robotPoseInImuFrame.orientation = robotToImuTf.transform.rotation;
+		geometry_msgs::Pose robotPoseInOdomFrame;
+		geometry_msgs::TransformStamped imuToOdomTf;
+		imuToOdomTf.transform.translation.x = position[0];
+		imuToOdomTf.transform.translation.y = position[1];
+		imuToOdomTf.transform.translation.z = position[2];
+		imuToOdomTf.transform.rotation = msg.orientation;
+		tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
+
+		geometry_msgs::TransformStamped robotToOdomTf;
+		robotToOdomTf.header.frame_id = odomFrame;
+		robotToOdomTf.header.stamp = msg.header.stamp;
+		robotToOdomTf.child_frame_id = robotFrame;
+		robotToOdomTf.transform.translation.x = robotPoseInOdomFrame.position.x;
+		robotToOdomTf.transform.translation.y = robotPoseInOdomFrame.position.y;
+		robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
+		robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
+		tfBroadcaster->sendTransform(robotToOdomTf);
 	}
 	catch(const tf2::TransformException& ex)
 	{
@@ -157,7 +176,9 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 	{
 		ROS_WARN("%s", ex.what());
 	}
+	lastIcpOdomMutex.lock();
 	lastIcpOdom = msg;
+	lastIcpOdomMutex.unlock();
 }
 
 int main(int argc, char** argv)
@@ -169,14 +190,11 @@ int main(int argc, char** argv)
 	pnh.param<std::string>("odom_frame", odomFrame, "odom");
 	pnh.param<std::string>("robot_frame", robotFrame, "base_link");
 	pnh.param<std::string>("imu_frame", imuFrame, "imu_link");
-	
+	pnh.param<bool>("rotation_only", rotationOnly, false);
+
 	bool realTime;
 	pnh.param<bool>("real_time", realTime, true);
 
-	pnh.param<bool>("translation_inhibited", translationInhibited, false);
-
-	
-	
 	int messageQueueSize;
 	if(realTime)
 	{
@@ -190,7 +208,7 @@ int main(int argc, char** argv)
 	}
 	tf2_ros::TransformListener tfListener(*tfBuffer);
 	tfBroadcaster = std::unique_ptr<tf2_ros::TransformBroadcaster>(new tf2_ros::TransformBroadcaster);
-	
+
 	ros::Subscriber imuSubscriber = nh.subscribe("imu_topic", messageQueueSize, imuCallback);
 	ros::Subscriber icpOdomSubscriber = nh.subscribe("icp_odom", messageQueueSize, icpOdomCallback);
 	
