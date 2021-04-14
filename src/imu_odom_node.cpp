@@ -25,6 +25,7 @@ nav_msgs::Odometry lastIcpOdom;
 std::mutex lastIcpOdomMutex;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
+ros::Publisher odomPublisher;
 
 void imuCallback(const sensor_msgs::Imu& msg)
 {
@@ -105,6 +106,13 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		robotToOdomTf.transform.translation.z = robotPoseInOdomFrame.position.z;
 		robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
 		tfBroadcaster->sendTransform(robotToOdomTf);
+
+		nav_msgs::Odometry odomMsg;
+		odomMsg.header.stamp = msg.header.stamp;
+		odomMsg.header.frame_id = odomFrame;
+		odomMsg.child_frame_id = robotFrame;
+		odomMsg.pose.pose = robotPoseInOdomFrame;
+		odomPublisher.publish(odomMsg);
 	}
 	catch(const tf2::TransformException& ex)
 	{
@@ -209,6 +217,8 @@ int main(int argc, char** argv)
 	tf2_ros::TransformListener tfListener(*tfBuffer);
 	tfBroadcaster = std::unique_ptr<tf2_ros::TransformBroadcaster>(new tf2_ros::TransformBroadcaster);
 
+	odomPublisher = nh.advertise<nav_msgs::Odometry>("imu_odom", 50, true);
+	
 	ros::Subscriber imuSubscriber = nh.subscribe("imu_topic", messageQueueSize, imuCallback);
 	ros::Subscriber icpOdomSubscriber = nh.subscribe("icp_odom", messageQueueSize, icpOdomCallback);
 	
@@ -216,3 +226,4 @@ int main(int argc, char** argv)
 	
 	return 0;
 }
+
