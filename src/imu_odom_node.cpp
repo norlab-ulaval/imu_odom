@@ -112,6 +112,12 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		odomMsg.header.frame_id = odomFrame;
 		odomMsg.child_frame_id = robotFrame;
 		odomMsg.pose.pose = robotPoseInOdomFrame;
+		odomMsg.twist.twist.linear.x = velocity(0);
+		odomMsg.twist.twist.linear.y = velocity(1);
+		odomMsg.twist.twist.linear.z = velocity(2);
+		odomMsg.twist.twist.angular.x = msg.angular_velocity.x;
+		odomMsg.twist.twist.angular.y = msg.angular_velocity.y;
+		odomMsg.twist.twist.angular.z = msg.angular_velocity.z;
 		odomPublisher.publish(odomMsg);
 	}
 	catch(const tf2::TransformException& ex)
