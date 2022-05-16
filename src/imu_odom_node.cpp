@@ -10,6 +10,8 @@
 #include <list>
 #include <tf2/LinearMath/Quaternion.h>
 #include <imu_odom/Inertia.h>
+#include <chrono>
+#include <thread>
 
 std::string odomFrame;
 std::string robotFrame;
@@ -22,18 +24,40 @@ std::mutex velocityMutex;
 Eigen::Vector3d velocity;
 Eigen::Vector3d position;
 std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
-sensor_msgs::Imu lastImuMeasurement;
-nav_msgs::Odometry lastIcpOdom;
+sensor_msgs::Imu previousImuMeasurement;
+nav_msgs::Odometry previousIcpOdom;
+std::mutex previousIcpOdomMutex;
 std::list<std::pair<ros::Time, Eigen::Vector3d>> deltaVelocities;
 std::unique_ptr<tf2_ros::Buffer> tfBuffer;
 ros::Publisher inertiaPublisher;
 bool mapperStarted = false;
+bool realTime;
 
 void imuCallback(const sensor_msgs::Imu& msg)
 {
 	try
 	{
-		if(lastImuMeasurement.header.stamp.isZero() && !rotationOnly)
+		if(!realTime)
+		{
+			int counter = 0;
+			previousIcpOdomMutex.lock();
+			ros::Time previousIcpOdomTime = previousIcpOdom.header.stamp;
+			previousIcpOdomMutex.unlock();
+			while(ros::ok() && !previousIcpOdomTime.isZero() && previousImuMeasurement.header.stamp - previousIcpOdomTime > ros::Duration(0.21))
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				previousIcpOdomMutex.lock();
+				previousIcpOdomTime = previousIcpOdom.header.stamp;
+				previousIcpOdomMutex.unlock();
+
+				if(++counter == 6000)
+				{
+					ROS_WARN("imu_odom has been waiting on an icp_odom message for one minute, it is probably going to wait forever.");
+				}
+			}
+		}
+
+		if(previousImuMeasurement.header.stamp.isZero() && !rotationOnly)
 		{
 			geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
 			geometry_msgs::Point robotPositionInImuFrame;
@@ -48,21 +72,21 @@ void imuCallback(const sensor_msgs::Imu& msg)
 		}
 		else
 		{
-			geometry_msgs::Vector3 lastAngularVelocityInOdomFrame;
-			geometry_msgs::TransformStamped lastImuToOdomOrientation;
-			lastImuToOdomOrientation.transform.rotation = lastImuMeasurement.orientation;
-			tf2::doTransform(lastImuMeasurement.angular_velocity, lastAngularVelocityInOdomFrame, lastImuToOdomOrientation);
+			geometry_msgs::Vector3 previousAngularVelocityInOdomFrame;
+			geometry_msgs::TransformStamped previousImuToOdomOrientation;
+			previousImuToOdomOrientation.transform.rotation = previousImuMeasurement.orientation;
+			tf2::doTransform(previousImuMeasurement.angular_velocity, previousAngularVelocityInOdomFrame, previousImuToOdomOrientation);
 			
 			geometry_msgs::Vector3 currentAngularVelocityInOdomFrame;
 			geometry_msgs::TransformStamped currentImuToOdomOrientation;
 			currentImuToOdomOrientation.transform.rotation = msg.orientation;
 			tf2::doTransform(msg.angular_velocity, currentAngularVelocityInOdomFrame, currentImuToOdomOrientation);
 			
-			Eigen::Vector3d lastAngularVelocity(lastAngularVelocityInOdomFrame.x, lastAngularVelocityInOdomFrame.y, lastAngularVelocityInOdomFrame.z);
+			Eigen::Vector3d previousAngularVelocity(previousAngularVelocityInOdomFrame.x, previousAngularVelocityInOdomFrame.y, previousAngularVelocityInOdomFrame.z);
 			Eigen::Vector3d currentAngularVelocity(currentAngularVelocityInOdomFrame.x, currentAngularVelocityInOdomFrame.y, currentAngularVelocityInOdomFrame.z);
 			
-			double deltaTime = (msg.header.stamp - lastImuMeasurement.header.stamp).toSec();
-			Eigen::Vector3d angularAcceleration = (currentAngularVelocity - lastAngularVelocity) / deltaTime;
+			double deltaTime = (msg.header.stamp - previousImuMeasurement.header.stamp).toSec();
+			Eigen::Vector3d angularAcceleration = (currentAngularVelocity - previousAngularVelocity) / deltaTime;
 			geometry_msgs::Vector3 angularAccelerationInOdomFrame;
 			angularAccelerationInOdomFrame.x = angularAcceleration[0];
 			angularAccelerationInOdomFrame.y = angularAcceleration[1];
@@ -100,36 +124,36 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			}
 			else
 			{
-				geometry_msgs::Vector3 lastAccelerationInOdomFrame;
-				tf2::doTransform(lastImuMeasurement.linear_acceleration, lastAccelerationInOdomFrame, lastImuToOdomOrientation);
+				geometry_msgs::Vector3 previousAccelerationInOdomFrame;
+				tf2::doTransform(previousImuMeasurement.linear_acceleration, previousAccelerationInOdomFrame, previousImuToOdomOrientation);
 				
 				geometry_msgs::Vector3 currentAccelerationInOdomFrame;
 				tf2::doTransform(msg.linear_acceleration, currentAccelerationInOdomFrame, currentImuToOdomOrientation);
 				
 				if(!gravitySet)
 				{
-					gravity = lastAccelerationInOdomFrame.z;
+					gravity = previousAccelerationInOdomFrame.z;
 					gravitySet = true;
 				}
-				lastAccelerationInOdomFrame.z -= gravity;
+				previousAccelerationInOdomFrame.z -= gravity;
 				currentAccelerationInOdomFrame.z -= gravity;
 				
-				Eigen::Vector3d lastAcceleration(lastAccelerationInOdomFrame.x, lastAccelerationInOdomFrame.y, lastAccelerationInOdomFrame.z);
+				Eigen::Vector3d previousAcceleration(previousAccelerationInOdomFrame.x, previousAccelerationInOdomFrame.y, previousAccelerationInOdomFrame.z);
 				Eigen::Vector3d currentAcceleration(currentAccelerationInOdomFrame.x, currentAccelerationInOdomFrame.y, currentAccelerationInOdomFrame.z);
-				Eigen::Vector3d deltaVelocity = 0.5 * (lastAcceleration + currentAcceleration) * deltaTime;
+				Eigen::Vector3d deltaVelocity = 0.5 * (previousAcceleration + currentAcceleration) * deltaTime;
 				
-				Eigen::Vector3d lastVelocity;
+				Eigen::Vector3d previousVelocity;
 				velocityMutex.lock();
 				deltaVelocities.emplace_back(std::make_pair(msg.header.stamp, deltaVelocity));
 				if(!mapperStarted)
 				{
 					deltaVelocity = Eigen::Vector3d::Zero();
 				}
-				lastVelocity = velocity;
+				previousVelocity = velocity;
 				velocity += deltaVelocity;
 				velocityMutex.unlock();
 				
-				position += (lastVelocity + (0.5 * deltaVelocity)) * deltaTime;
+				position += (previousVelocity + (0.5 * deltaVelocity)) * deltaTime;
 				
 				geometry_msgs::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, ros::Duration(0.1));
 				geometry_msgs::Pose robotPoseInImuFrame;
@@ -164,7 +188,7 @@ void imuCallback(const sensor_msgs::Imu& msg)
 				tf2::doTransform(lidarPositionInImuFrame, lidarPositionInOdomFrame, imuToOdomTf);
 				Eigen::Vector3d lidarPosition(lidarPositionInOdomFrame.x, lidarPositionInOdomFrame.y, lidarPositionInOdomFrame.z);
 				
-				Eigen::Vector3d linearVelocity = lastVelocity + deltaVelocity;
+				Eigen::Vector3d linearVelocity = previousVelocity + deltaVelocity;
 				Eigen::Vector3d lidarLinearVelocity = linearVelocity + currentAngularVelocity.cross(lidarPosition - position);
 				geometry_msgs::Vector3 lidarLinearVelocityInOdomFrame;
 				lidarLinearVelocityInOdomFrame.x = lidarLinearVelocity[0];
@@ -191,7 +215,7 @@ void imuCallback(const sensor_msgs::Imu& msg)
 			inertiaPublisher.publish(inertiaMsg);
 		}
 		
-		lastImuMeasurement = msg;
+		previousImuMeasurement = msg;
 	}
 	catch(const tf2::TransformException& ex)
 	{
@@ -204,7 +228,7 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 {
 	try
 	{
-		if(!lastIcpOdom.header.stamp.isZero())
+		if(!previousIcpOdom.header.stamp.isZero())
 		{
 			geometry_msgs::TransformStamped currentImuToRobotTf = tfBuffer->lookupTransform(msg.child_frame_id, imuFrame, msg.header.stamp,
 																							ros::Duration(0.1));
@@ -220,25 +244,25 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 			currentRobotToMapTf.transform.rotation = msg.pose.pose.orientation;
 			tf2::doTransform(currentPositionInRobotFrame, currentPositionInMapFrame, currentRobotToMapTf);
 			
-			geometry_msgs::TransformStamped lastImuToRobotTf = tfBuffer->lookupTransform(lastIcpOdom.child_frame_id, imuFrame, lastIcpOdom.header.stamp,
+			geometry_msgs::TransformStamped previousImuToRobotTf = tfBuffer->lookupTransform(previousIcpOdom.child_frame_id, imuFrame, previousIcpOdom.header.stamp,
 																						 ros::Duration(0.1));
-			geometry_msgs::Point lastPositionInRobotFrame;
-			lastPositionInRobotFrame.x = lastImuToRobotTf.transform.translation.x;
-			lastPositionInRobotFrame.y = lastImuToRobotTf.transform.translation.y;
-			lastPositionInRobotFrame.z = lastImuToRobotTf.transform.translation.z;
-			geometry_msgs::Point lastPositionInMapFrame;
-			geometry_msgs::TransformStamped lastRobotToMapTf;
-			lastRobotToMapTf.transform.translation.x = lastIcpOdom.pose.pose.position.x;
-			lastRobotToMapTf.transform.translation.y = lastIcpOdom.pose.pose.position.y;
-			lastRobotToMapTf.transform.translation.z = lastIcpOdom.pose.pose.position.z;
-			lastRobotToMapTf.transform.rotation = lastIcpOdom.pose.pose.orientation;
-			tf2::doTransform(lastPositionInRobotFrame, lastPositionInMapFrame, lastRobotToMapTf);
+			geometry_msgs::Point previousPositionInRobotFrame;
+			previousPositionInRobotFrame.x = previousImuToRobotTf.transform.translation.x;
+			previousPositionInRobotFrame.y = previousImuToRobotTf.transform.translation.y;
+			previousPositionInRobotFrame.z = previousImuToRobotTf.transform.translation.z;
+			geometry_msgs::Point previousPositionInMapFrame;
+			geometry_msgs::TransformStamped previousRobotToMapTf;
+			previousRobotToMapTf.transform.translation.x = previousIcpOdom.pose.pose.position.x;
+			previousRobotToMapTf.transform.translation.y = previousIcpOdom.pose.pose.position.y;
+			previousRobotToMapTf.transform.translation.z = previousIcpOdom.pose.pose.position.z;
+			previousRobotToMapTf.transform.rotation = previousIcpOdom.pose.pose.orientation;
+			tf2::doTransform(previousPositionInRobotFrame, previousPositionInMapFrame, previousRobotToMapTf);
 			
-			double deltaTime = (msg.header.stamp - lastIcpOdom.header.stamp).toSec();
+			double deltaTime = (msg.header.stamp - previousIcpOdom.header.stamp).toSec();
 			geometry_msgs::Vector3 currentVelocityInMapFrame;
-			currentVelocityInMapFrame.x = (currentPositionInMapFrame.x - lastPositionInMapFrame.x) / deltaTime;
-			currentVelocityInMapFrame.y = (currentPositionInMapFrame.y - lastPositionInMapFrame.y) / deltaTime;
-			currentVelocityInMapFrame.z = (currentPositionInMapFrame.z - lastPositionInMapFrame.z) / deltaTime;
+			currentVelocityInMapFrame.x = (currentPositionInMapFrame.x - previousPositionInMapFrame.x) / deltaTime;
+			currentVelocityInMapFrame.y = (currentPositionInMapFrame.y - previousPositionInMapFrame.y) / deltaTime;
+			currentVelocityInMapFrame.z = (currentPositionInMapFrame.z - previousPositionInMapFrame.z) / deltaTime;
 			geometry_msgs::Vector3 currentVelocityInOdomFrame;
 			geometry_msgs::TransformStamped currentMapToOdomTf = tfBuffer->lookupTransform(odomFrame, msg.header.frame_id, msg.header.stamp,
 																						   ros::Duration(0.1));
@@ -258,8 +282,10 @@ void icpOdomCallback(const nav_msgs::Odometry& msg)
 			velocity = currentVelocity;
 			velocityMutex.unlock();
 		}
-		
-		lastIcpOdom = msg;
+
+		previousIcpOdomMutex.lock();
+		previousIcpOdom = msg;
+		previousIcpOdomMutex.unlock();
 	}
 	catch(const tf2::TransformException& ex)
 	{
@@ -279,8 +305,7 @@ int main(int argc, char** argv)
 	pnh.param<std::string>("imu_frame", imuFrame, "imu_link");
 	pnh.param<std::string>("lidar_frame", lidarFrame, "rslidar16");
 	pnh.param<bool>("rotation_only", rotationOnly, false);
-	
-	bool realTime;
+
 	pnh.param<bool>("real_time", realTime, true);
 	
 	int messageQueueSize;
@@ -301,8 +326,9 @@ int main(int argc, char** argv)
 	ros::Subscriber icpOdomSubscriber = nh.subscribe("icp_odom", messageQueueSize, icpOdomCallback);
 	
 	inertiaPublisher = nh.advertise<imu_odom::Inertia>("inertia_topic", messageQueueSize);
-	
-	ros::spin();
+
+	ros::MultiThreadedSpinner spinner(2);
+	spinner.spin();
 	
 	return 0;
 }
