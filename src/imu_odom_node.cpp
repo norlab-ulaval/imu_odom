@@ -44,7 +44,7 @@ public:
             tfBuffer = std::unique_ptr<tf2_ros::Buffer>(new tf2_ros::Buffer(this->get_clock(), tf2::Duration::max()));
             messageQueueSize = 0;
         }
-        tf2_ros::TransformListener tfListener(*tfBuffer);
+        tfListener = std::unique_ptr<tf2_ros::TransformListener>(new tf2_ros::TransformListener(*tfBuffer));
         tfBroadcaster = std::unique_ptr<tf2_ros::TransformBroadcaster>(new tf2_ros::TransformBroadcaster(*this));
 
         imuSubscription = this->create_subscription<sensor_msgs::msg::Imu>("imu_topic", messageQueueSize, std::bind(&ImuOdomNode::imuCallback, this, std::placeholders::_1));
@@ -310,6 +310,7 @@ private:
     nav_msgs::msg::Odometry lastIcpOdom;
     std::list<std::pair<rclcpp::Time, Eigen::Vector3d>> deltaVelocities;
     std::unique_ptr<tf2_ros::Buffer> tfBuffer;
+    std::unique_ptr<tf2_ros::TransformListener> tfListener;
     rclcpp::Publisher<imu_odom::msg::Inertia>::SharedPtr inertiaPublisher;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr icpOdomSubscription;
