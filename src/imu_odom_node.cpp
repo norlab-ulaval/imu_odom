@@ -60,7 +60,7 @@ private:
         {
             if(lastImuMeasurement.header.stamp.sec == 0 && lastImuMeasurement.header.stamp.nanosec == 0 && !rotationOnly)
             {
-                geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, std::chrono::milliseconds(100));
+                geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000), std::chrono::milliseconds(100));
                 geometry_msgs::msg::Point robotPositionInImuFrame;
                 robotPositionInImuFrame.x = robotToImuTf.transform.translation.x;
                 robotPositionInImuFrame.y = robotToImuTf.transform.translation.y;
@@ -98,7 +98,7 @@ private:
                 tf2::fromMsg(msg.orientation, imuOrientationInOdomFrame);
                 geometry_msgs::msg::Quaternion odomOrientationInImuFrame = tf2::toMsg(imuOrientationInOdomFrame.inverse());
                 geometry_msgs::msg::Quaternion odomOrientationInLidarFrame;
-                geometry_msgs::msg::TransformStamped imuToLidarTf = tfBuffer->lookupTransform(lidarFrame, imuFrame, msg.header.stamp, std::chrono::milliseconds(100));
+                geometry_msgs::msg::TransformStamped imuToLidarTf = tfBuffer->lookupTransform(lidarFrame, imuFrame, rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000), std::chrono::milliseconds(100));
                 tf2::doTransform(odomOrientationInImuFrame, odomOrientationInLidarFrame, imuToLidarTf);
                 geometry_msgs::msg::TransformStamped odomToLidarOrientationTf;
                 odomToLidarOrientationTf.transform.rotation = odomOrientationInLidarFrame;
@@ -110,7 +110,7 @@ private:
                 geometry_msgs::msg::Vector3 lidarLinearVelocityInLidarFrame, lidarLinearAccelerationInLidarFrame;
                 if(rotationOnly)
                 {
-                    geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp,
+                    geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000),
                                                                                                   std::chrono::milliseconds(100));
                     geometry_msgs::msg::Quaternion robotOrientationInOdomFrame;
                     geometry_msgs::msg::TransformStamped imuToOdomOrientation;
@@ -119,7 +119,7 @@ private:
 
                     geometry_msgs::msg::TransformStamped robotToOdomTf;
                     robotToOdomTf.header.frame_id = odomFrame;
-                    robotToOdomTf.header.stamp = msg.header.stamp;
+                    robotToOdomTf.header.stamp = rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000);
                     robotToOdomTf.child_frame_id = robotFrame;
                     robotToOdomTf.transform.rotation = robotOrientationInOdomFrame;
                     tfBroadcaster->sendTransform(robotToOdomTf);
@@ -157,7 +157,7 @@ private:
 
                     position += (lastVelocity + (0.5 * deltaVelocity)) * deltaTime;
 
-                    geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp,
+                    geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000),
                                                                                                   std::chrono::milliseconds(100));
                     geometry_msgs::msg::Pose robotPoseInImuFrame;
                     robotPoseInImuFrame.position.x = robotToImuTf.transform.translation.x;
@@ -174,7 +174,7 @@ private:
 
                     geometry_msgs::msg::TransformStamped robotToOdomTf;
                     robotToOdomTf.header.frame_id = odomFrame;
-                    robotToOdomTf.header.stamp = msg.header.stamp;
+                    robotToOdomTf.header.stamp = rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000);
                     robotToOdomTf.child_frame_id = robotFrame;
                     robotToOdomTf.transform.translation.x = robotPoseInOdomFrame.position.x;
                     robotToOdomTf.transform.translation.y = robotPoseInOdomFrame.position.y;
@@ -182,7 +182,7 @@ private:
                     robotToOdomTf.transform.rotation = robotPoseInOdomFrame.orientation;
                     tfBroadcaster->sendTransform(robotToOdomTf);
 
-                    geometry_msgs::msg::TransformStamped lidarToImuTf = tfBuffer->lookupTransform(imuFrame, lidarFrame, msg.header.stamp, std::chrono::milliseconds(100));
+                    geometry_msgs::msg::TransformStamped lidarToImuTf = tfBuffer->lookupTransform(imuFrame, lidarFrame, rclcpp::Time(msg.header.stamp)+rclcpp::Duration(1689175049,435000000), std::chrono::milliseconds(100));
                     geometry_msgs::msg::Point lidarPositionInImuFrame;
                     lidarPositionInImuFrame.x = lidarToImuTf.transform.translation.x;
                     lidarPositionInImuFrame.y = lidarToImuTf.transform.translation.y;
