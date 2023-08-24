@@ -41,7 +41,7 @@ public:
         }
         else
         {
-            tfBuffer = std::unique_ptr<tf2_ros::Buffer>(new tf2_ros::Buffer(this->get_clock(), tf2::Duration::max()));
+            tfBuffer = std::unique_ptr<tf2_ros::Buffer>(new tf2_ros::Buffer(this->get_clock(), std::chrono::seconds(1000000)));
             messageQueueSize = 0;
         }
         tfListener = std::unique_ptr<tf2_ros::TransformListener>(new tf2_ros::TransformListener(*tfBuffer));
@@ -209,11 +209,55 @@ private:
                     tf2::doTransform(lidarLinearAccelerationInOdomFrame, lidarLinearAccelerationInLidarFrame, odomToLidarOrientationTf);
                 }
 
+                tf2::Quaternion imuOrientationInLidarFrame;
+                tf2::fromMsg(imuToLidarTf.transform.rotation, imuOrientationInLidarFrame);
+                tf2::Matrix3x3 imuToLidarRotation(imuOrientationInLidarFrame);
+                tf2::Matrix3x3 angularVelocityCovariance;
+                angularVelocityCovariance[0][0] = msg.angular_velocity_covariance[0];
+                angularVelocityCovariance[0][1] = msg.angular_velocity_covariance[1];
+                angularVelocityCovariance[0][2] = msg.angular_velocity_covariance[2];
+                angularVelocityCovariance[1][0] = msg.angular_velocity_covariance[3];
+                angularVelocityCovariance[1][1] = msg.angular_velocity_covariance[4];
+                angularVelocityCovariance[1][2] = msg.angular_velocity_covariance[5];
+                angularVelocityCovariance[2][0] = msg.angular_velocity_covariance[6];
+                angularVelocityCovariance[2][1] = msg.angular_velocity_covariance[7];
+                angularVelocityCovariance[2][2] = msg.angular_velocity_covariance[8];
+                tf2::Matrix3x3 angularVelocityCovarianceInLidarFrame = imuToLidarRotation * angularVelocityCovariance * imuToLidarRotation.transpose();
+                tf2::Matrix3x3 linearVelocityCovariance;
+                linearVelocityCovariance[0][0] = 1e-6;
+                linearVelocityCovariance[0][1] = 0;
+                linearVelocityCovariance[0][2] = 0;
+                linearVelocityCovariance[1][0] = 0;
+                linearVelocityCovariance[1][1] = 1e-6;
+                linearVelocityCovariance[1][2] = 0;
+                linearVelocityCovariance[2][0] = 0;
+                linearVelocityCovariance[2][1] = 0;
+                linearVelocityCovariance[2][2] = 1e-6;
+                tf2::Matrix3x3 linearVelocityCovarianceInLidarFrame = imuToLidarRotation * linearVelocityCovariance * imuToLidarRotation.transpose();
+
                 imu_odom::msg::Inertia inertiaMsg;
                 inertiaMsg.header = msg.header;
                 inertiaMsg.linear_velocity = lidarLinearVelocityInLidarFrame;
                 inertiaMsg.linear_acceleration = lidarLinearAccelerationInLidarFrame;
+                inertiaMsg.linear_velocity_covariance[0] = linearVelocityCovarianceInLidarFrame[0][0];
+                inertiaMsg.linear_velocity_covariance[1] = linearVelocityCovarianceInLidarFrame[0][1];
+                inertiaMsg.linear_velocity_covariance[2] = linearVelocityCovarianceInLidarFrame[0][2];
+                inertiaMsg.linear_velocity_covariance[3] = linearVelocityCovarianceInLidarFrame[1][0];
+                inertiaMsg.linear_velocity_covariance[4] = linearVelocityCovarianceInLidarFrame[1][1];
+                inertiaMsg.linear_velocity_covariance[5] = linearVelocityCovarianceInLidarFrame[1][2];
+                inertiaMsg.linear_velocity_covariance[6] = linearVelocityCovarianceInLidarFrame[2][0];
+                inertiaMsg.linear_velocity_covariance[7] = linearVelocityCovarianceInLidarFrame[2][1];
+                inertiaMsg.linear_velocity_covariance[8] = linearVelocityCovarianceInLidarFrame[2][2];
                 inertiaMsg.angular_velocity = angularVelocityInLidarFrame;
+                inertiaMsg.angular_velocity_covariance[0] = angularVelocityCovarianceInLidarFrame[0][0];
+                inertiaMsg.angular_velocity_covariance[1] = angularVelocityCovarianceInLidarFrame[0][1];
+                inertiaMsg.angular_velocity_covariance[2] = angularVelocityCovarianceInLidarFrame[0][2];
+                inertiaMsg.angular_velocity_covariance[3] = angularVelocityCovarianceInLidarFrame[1][0];
+                inertiaMsg.angular_velocity_covariance[4] = angularVelocityCovarianceInLidarFrame[1][1];
+                inertiaMsg.angular_velocity_covariance[5] = angularVelocityCovarianceInLidarFrame[1][2];
+                inertiaMsg.angular_velocity_covariance[6] = angularVelocityCovarianceInLidarFrame[2][0];
+                inertiaMsg.angular_velocity_covariance[7] = angularVelocityCovarianceInLidarFrame[2][1];
+                inertiaMsg.angular_velocity_covariance[8] = angularVelocityCovarianceInLidarFrame[2][2];
                 inertiaMsg.angular_acceleration = angularAccelerationInLidarFrame;
                 inertiaPublisher->publish(inertiaMsg);
             }
