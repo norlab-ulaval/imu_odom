@@ -4,6 +4,7 @@
 #include <Eigen/Core>
 #include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -45,6 +46,8 @@ public:
 
         imuSubscription = this->create_subscription<sensor_msgs::msg::Imu>("imu_topic", messageQueueSize, std::bind(&ImuOdomNode::imuCallback, this,
                                                                                              std::placeholders::_1));
+        altitudeSubscription = this->create_subscription<geometry_msgs::msg::PointStamped>("altitude_topic", messageQueueSize, std::bind(&ImuOdomNode::altitudeCallback, this,
+                                                                                                                    std::placeholders::_1));
         icpOdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>("icp_odom", messageQueueSize, std::bind(&ImuOdomNode::icpOdomCallback, this,
                                                                                                 std::placeholders::_1));
     }
@@ -63,13 +66,16 @@ private:
     Eigen::Vector3d position;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
     sensor_msgs::msg::Imu lastImuMeasurement;
+    geometry_msgs::msg::PointStamped lastAltitudeMeasurement;
     nav_msgs::msg::Odometry lastIcpOdom;
     std::mutex lastIcpOdomMutex;
+    std::mutex lastAltitudeMutex;
     std::list<std::pair<rclcpp::Time, Eigen::Vector3d>> deltaVelocities;
     std::unique_ptr<tf2_ros::Buffer> tfBuffer;
     std::unique_ptr<tf2_ros::TransformListener> tfListener;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odomPublisher;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription;
+    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr altitudeSubscription;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr icpOdomSubscription;
 
     void imuCallback(const sensor_msgs::msg::Imu& msg)
@@ -138,6 +144,10 @@ private:
             geometry_msgs::msg::TransformStamped imuToOdomTf;
             imuToOdomTf.transform.translation.x = position[0];
             imuToOdomTf.transform.translation.y = position[1];
+            // if anything fails look here! Just taking in the relative altitude and inserting in here.
+//            lastAltitudeMutex.lock();
+//            imuToOdomTf.transform.translation.z = lastAltitudeMeasurement.point.z;
+//            lastAltitudeMutex.unlock();
             imuToOdomTf.transform.translation.z = position[2];
             imuToOdomTf.transform.rotation = msg.orientation;
             tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
@@ -232,6 +242,13 @@ private:
         lastIcpOdomMutex.lock();
         lastIcpOdom = msg;
         lastIcpOdomMutex.unlock();
+    }
+
+    void altitudeCallback(const geometry_msgs::msg::PointStamped& msg)
+    {
+        lastAltitudeMutex.lock();
+        lastAltitudeMeasurement = msg;
+        lastAltitudeMutex.unlock();
     }
 };
 
