@@ -145,10 +145,10 @@ private:
             imuToOdomTf.transform.translation.x = position[0];
             imuToOdomTf.transform.translation.y = position[1];
             // if anything fails look here! Just taking in the relative altitude and inserting in here.
-//            lastAltitudeMutex.lock();
-//            imuToOdomTf.transform.translation.z = lastAltitudeMeasurement.point.z;
-//            lastAltitudeMutex.unlock();
-            imuToOdomTf.transform.translation.z = position[2];
+            lastAltitudeMutex.lock();
+            imuToOdomTf.transform.translation.z = lastAltitudeMeasurement.point.z;
+            lastAltitudeMutex.unlock();
+//            imuToOdomTf.transform.translation.z = position[2];
             imuToOdomTf.transform.rotation = msg.orientation;
             tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
 
