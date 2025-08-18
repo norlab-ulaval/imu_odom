@@ -21,6 +21,8 @@ public:
         this->declare_parameter<std::string>("altimeter_frame", "altimeter_link");
         this->declare_parameter<bool>("rotation_only", false);
         this->declare_parameter<bool>("real_time", true);
+        this->declare_parameter<bool>("use_altitude", true);
+
 
         this->get_parameter("odom_frame", odomFrame);
         this->get_parameter("robot_frame", robotFrame);
@@ -29,6 +31,7 @@ public:
         this->get_parameter("rotation_only", rotationOnly);
         bool realTime;
         this->get_parameter("real_time", realTime);
+        this->get_parameter("use_altitude", useAltitude);
 
         int messageQueueSize;
         if(realTime)
@@ -65,6 +68,7 @@ private:
     double gravity;
     bool gravitySet = false;
     bool isFirstAltitude = true;
+    bool useAltitude;
     Eigen::Vector3d velocity;
     std::mutex velocityMutex;
     Eigen::Vector3d position;
@@ -164,6 +168,9 @@ private:
             geometry_msgs::msg::TransformStamped imuToOdomTfQuaternion;
             imuToOdomTfQuaternion.transform.rotation = msg.orientation;
 
+            RCLCPP_INFO(this->get_logger(), "Set orientation from message");
+
+
             geometry_msgs::msg::Pose altiPoseInOdomFrame;
             tf2::doTransform(AltiPoseInImuFrame, altiPoseInOdomFrame, imuToOdomTfQuaternion);
 
@@ -187,7 +194,10 @@ private:
                 firstAltitudeMeasurementCorrectFrame = altitudeRobotPoseInOdomFrame.position.z;
                 isFirstAltitude = false;
             }
-            robotPoseInOdomFrame.position.z = altitudeRobotPoseInOdomFrame.position.z - firstAltitudeMeasurementCorrectFrame;
+            if (useAltitude)
+            {
+                robotPoseInOdomFrame.position.z = altitudeRobotPoseInOdomFrame.position.z - firstAltitudeMeasurementCorrectFrame;
+            }
 
             geometry_msgs::msg::TransformStamped robotToOdomTf;
             robotToOdomTf.header.frame_id = odomFrame;

@@ -1,0 +1,11 @@
+<launch>
+	<node pkg="imu_odom" type="imu_odom_node" name="imu_odom_node" output="screen">
+		<remap from="imu_topic" to="/MTI30_imu/data_filtered"/>
+		<param name="odom_frame" value="odom"/>
+		<param name="robot_frame" value="base_link"/>
+		<param name="imu_frame" value="mti30"/>
+		<param name="real_time" value="true"/>
+		<param name="use_altitude" value="false"/>
+	</node>
+</launch>
+
