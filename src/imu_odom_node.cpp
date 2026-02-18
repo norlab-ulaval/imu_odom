@@ -51,8 +51,13 @@ public:
 
         imuSubscription = this->create_subscription<sensor_msgs::msg::Imu>("imu_topic", messageQueueSize, std::bind(&ImuOdomNode::imuCallback, this,
                                                                                              std::placeholders::_1));
-        altitudeSubscription = this->create_subscription<geometry_msgs::msg::PointStamped>("altitude_topic", messageQueueSize, std::bind(&ImuOdomNode::altitudeCallback, this,
+        
+        if (useAltitude)
+        {
+            altitudeSubscription = this->create_subscription<geometry_msgs::msg::PointStamped>("altitude_topic", messageQueueSize, std::bind(&ImuOdomNode::altitudeCallback, this,
                                                                                                                     std::placeholders::_1));
+        }
+        
         icpOdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>("icp_odom", messageQueueSize, std::bind(&ImuOdomNode::icpOdomCallback, this,
                                                                                                 std::placeholders::_1));
     }
@@ -157,45 +162,42 @@ private:
             imuToOdomTf.transform.rotation = msg.orientation;
             tf2::doTransform(robotPoseInImuFrame, robotPoseInOdomFrame, imuToOdomTf);
 
-            geometry_msgs::msg::TransformStamped currentAltiToImuTf = tfBuffer->lookupTransform(imuFrame, altiFrame, msg.header.stamp,
-                                                                                                  std::chrono::milliseconds(100));
-            geometry_msgs::msg::Pose AltiPoseInImuFrame;
-            AltiPoseInImuFrame.position.x = currentAltiToImuTf.transform.translation.x;
-            AltiPoseInImuFrame.position.y = currentAltiToImuTf.transform.translation.y;
-            AltiPoseInImuFrame.position.z = currentAltiToImuTf.transform.translation.z;
-            AltiPoseInImuFrame.orientation = currentAltiToImuTf.transform.rotation;
-
-            geometry_msgs::msg::TransformStamped imuToOdomTfQuaternion;
-            imuToOdomTfQuaternion.transform.rotation = msg.orientation;
-
-            RCLCPP_INFO(this->get_logger(), "Set orientation from message");
-
-
-            geometry_msgs::msg::Pose altiPoseInOdomFrame;
-            tf2::doTransform(AltiPoseInImuFrame, altiPoseInOdomFrame, imuToOdomTfQuaternion);
-
-            geometry_msgs::msg::TransformStamped altiToOdomTf;
-            lastAltitudeAltiFrameMutex.lock();
-            altiToOdomTf.transform.translation.z = lastAltitudeMeasurementAltiFrame;
-            lastAltitudeAltiFrameMutex.unlock();
-            altiToOdomTf.transform.rotation = altiPoseInOdomFrame.orientation;
-
-            geometry_msgs::msg::TransformStamped robotToAltiFrameTf = tfBuffer->lookupTransform(altiFrame, robotFrame, msg.header.stamp,
-                                                                                                std::chrono::milliseconds(100));
-            geometry_msgs::msg::Pose robotPoseInAltiFrame;
-            robotPoseInAltiFrame.position.x = robotToAltiFrameTf.transform.translation.x;
-            robotPoseInAltiFrame.position.y = robotToAltiFrameTf.transform.translation.y;
-            robotPoseInAltiFrame.position.z = robotToAltiFrameTf.transform.translation.z;
-            robotPoseInAltiFrame.orientation = robotToAltiFrameTf.transform.rotation;
-            geometry_msgs::msg::Pose altitudeRobotPoseInOdomFrame;
-            tf2::doTransform(robotPoseInAltiFrame, altitudeRobotPoseInOdomFrame, altiToOdomTf);
-            if (isFirstAltitude)
-            {
-                firstAltitudeMeasurementCorrectFrame = altitudeRobotPoseInOdomFrame.position.z;
-                isFirstAltitude = false;
-            }
             if (useAltitude)
             {
+                geometry_msgs::msg::TransformStamped currentAltiToImuTf = tfBuffer->lookupTransform(imuFrame, altiFrame, msg.header.stamp,
+                                                                                                    std::chrono::milliseconds(100));
+                geometry_msgs::msg::Pose AltiPoseInImuFrame;
+                AltiPoseInImuFrame.position.x = currentAltiToImuTf.transform.translation.x;
+                AltiPoseInImuFrame.position.y = currentAltiToImuTf.transform.translation.y;
+                AltiPoseInImuFrame.position.z = currentAltiToImuTf.transform.translation.z;
+                AltiPoseInImuFrame.orientation = currentAltiToImuTf.transform.rotation;
+
+                geometry_msgs::msg::TransformStamped imuToOdomTfQuaternion;
+                imuToOdomTfQuaternion.transform.rotation = msg.orientation;
+
+                geometry_msgs::msg::Pose altiPoseInOdomFrame;
+                tf2::doTransform(AltiPoseInImuFrame, altiPoseInOdomFrame, imuToOdomTfQuaternion);
+
+                geometry_msgs::msg::TransformStamped altiToOdomTf;
+                lastAltitudeAltiFrameMutex.lock();
+                altiToOdomTf.transform.translation.z = lastAltitudeMeasurementAltiFrame;
+                lastAltitudeAltiFrameMutex.unlock();
+                altiToOdomTf.transform.rotation = altiPoseInOdomFrame.orientation;
+
+                geometry_msgs::msg::TransformStamped robotToAltiFrameTf = tfBuffer->lookupTransform(altiFrame, robotFrame, msg.header.stamp,
+                                                                                                    std::chrono::milliseconds(100));
+                geometry_msgs::msg::Pose robotPoseInAltiFrame;
+                robotPoseInAltiFrame.position.x = robotToAltiFrameTf.transform.translation.x;
+                robotPoseInAltiFrame.position.y = robotToAltiFrameTf.transform.translation.y;
+                robotPoseInAltiFrame.position.z = robotToAltiFrameTf.transform.translation.z;
+                robotPoseInAltiFrame.orientation = robotToAltiFrameTf.transform.rotation;
+                geometry_msgs::msg::Pose altitudeRobotPoseInOdomFrame;
+                tf2::doTransform(robotPoseInAltiFrame, altitudeRobotPoseInOdomFrame, altiToOdomTf);
+                if (isFirstAltitude)
+                {
+                    firstAltitudeMeasurementCorrectFrame = altitudeRobotPoseInOdomFrame.position.z;
+                    isFirstAltitude = false;
+                }
                 robotPoseInOdomFrame.position.z = altitudeRobotPoseInOdomFrame.position.z - firstAltitudeMeasurementCorrectFrame;
             }
 
