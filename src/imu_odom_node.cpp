@@ -74,9 +74,25 @@ private:
     bool gravitySet = false;
     bool isFirstAltitude = true;
     bool useAltitude;
-    Eigen::Vector3d velocity;
+    // Defensive zero-init (was uninitialized): if seeding never succeeds this
+    // stays a known, finite zero instead of garbage/NaN propagating into
+    // every published odom->base_footprint TF forever. The real fix is
+    // positionSeeded_ below -- this is a second layer of defense only.
+    Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
     std::mutex velocityMutex;
-    Eigen::Vector3d position;
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+    // True only once the initial position-seeding TF lookup in imuCallback()
+    // has actually SUCCEEDED. Previously this was inferred from
+    // lastImuMeasurement.header.stamp being nonzero, but lastImuMeasurement
+    // is unconditionally overwritten at the end of imuCallback() even when
+    // the seeding TF lookup throws (tf tree not up yet at startup) -- so a
+    // single failed lookup on the very first IMU message permanently
+    // skipped re-seeding, leaving `position` uninitialized/NaN forever and
+    // silently poisoning every downstream odom->base_footprint transform
+    // (observed 2026-07-30: TF_NAN_INPUT on base_footprint from
+    // imu_odom_node, mapper_node crashing on ConvergenceError because its
+    // seed pose was NaN).
+    bool positionSeeded_{false};
     std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
     sensor_msgs::msg::Imu lastImuMeasurement;
     double firstAltitudeMeasurementCorrectFrame;
@@ -100,7 +116,7 @@ private:
             bool underMaxTimeWithoutIcpOdom = (rclcpp::Time(msg.header.stamp) - rclcpp::Time(lastIcpOdom.header.stamp)) <= MAX_TIME_WITHOUT_ICP_ODOM;
             lastIcpOdomMutex.unlock();
 
-            if(lastImuMeasurement.header.stamp.sec == 0 && lastImuMeasurement.header.stamp.nanosec == 0)
+            if(!positionSeeded_)
             {
                 geometry_msgs::msg::TransformStamped robotToImuTf = tfBuffer->lookupTransform(msg.header.frame_id, robotFrame, msg.header.stamp, std::chrono::milliseconds(100));
                 geometry_msgs::msg::Point robotPositionInImuFrame;
@@ -112,6 +128,13 @@ private:
                 imuToOdomOrientation.transform.rotation = msg.orientation;
                 tf2::doTransform(robotPositionInImuFrame, robotPositionInOdomFrame, imuToOdomOrientation);
                 position = Eigen::Vector3d(-robotPositionInOdomFrame.x, -robotPositionInOdomFrame.y, -robotPositionInOdomFrame.z);
+                // Only mark seeded once this TF lookup has actually succeeded --
+                // if lookupTransform() throws above, this line is never reached,
+                // the outer catch(...) handles it, and the NEXT imuCallback()
+                // will retry seeding instead of silently integrating on top of
+                // a zeroed/garbage position forever. This is the actual fix;
+                // see positionSeeded_'s declaration comment for the bug this closes.
+                positionSeeded_ = true;
             }
             else if(underMaxTimeWithoutIcpOdom && !rotationOnly)
             {
